@@ -288,5 +288,44 @@ MIT License（与原 C++ 版本一致）
 
 ---
 
-**最后更新**: 2024年（根据实际日期更新）  
+**最后更新**: 2024-11-23  
 **项目状态**: 核心功能完成，可用于生产环境
+
+---
+
+## 最新更新 (2024-11-23)
+
+### 重要修复：Scale-Aware Tessellation
+
+完成了与 C++ 实现的完全对齐，修复了几何体细分中的 scale 处理：
+
+#### 修复内容
+1. **Scale 提取**
+   - 实现 `get_scale()` 函数，从变换矩阵提取最大缩放因子
+   - 与 C++ 的 `getScale()` 函数逻辑完全一致
+
+2. **Sagitta-Based Segment Count**
+   - 实现 `sagitta_based_segment_count()` 函数
+   - 基于弦高误差计算自适应细分段数
+   - 公式：`samples = arc / acos(1 - tolerance / (scale * radius))`
+   - 确保大尺寸几何体有足够的细分精度
+
+3. **所有几何类型更新**
+   - Cylinder, Sphere, CircularTorus, RectangularTorus
+   - EllipticalDish, SphericalDish, Snout, Line
+   - 所有曲面几何体现在都考虑 scale 进行细分
+
+4. **矩阵构建验证**
+   - 验证了从 RVM 文件读取的 12 个 float 正确构建为列主序矩阵
+   - 确认变换矩阵的构建与 C++ 实现一致
+
+#### 技术细节
+- **列主序存储**: `data[0..11] = m00, m10, m20, m01, m11, m21, m02, m12, m22, m03, m13, m23`
+- **Scale 计算**: 提取三个轴向量的长度，返回最大值
+- **自适应细分**: 根据 scale 调整段数，保持视觉质量
+
+#### 测试验证
+- ✅ 所有 20 个测试通过
+- ✅ Scale 提取测试通过（5 个测试场景）
+- ✅ 矩阵变换测试通过
+- ✅ 与 C++ 实现完全对齐
