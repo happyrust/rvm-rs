@@ -1,5 +1,5 @@
 use crate::export::{ExportError, Tessellate};
-use crate::store::{Geometry, GeometryKind, Node, NodeKind, Store};
+use crate::store::{Geometry, GeometryId, GeometryKind, Node, NodeId, NodeKind, Store};
 use crate::visitor::Visitor;
 use std::collections::HashSet;
 use std::fs::File;
@@ -29,7 +29,8 @@ pub struct ObjExporter {
     defined_materials: HashSet<u64>,
     vertex_offset: u32,
     normal_offset: u32,
-    current_path: Vec<String>,
+    /// Group names only (for "o" output, matching C++ behavior - no File/Model prefix)
+    group_stack: Vec<String>,
     options: ObjExportOptions,
 }
 
@@ -62,7 +63,7 @@ impl ObjExporter {
             defined_materials: HashSet::new(),
             vertex_offset: 1, // OBJ uses 1-based indexing
             normal_offset: 1,
-            current_path: Vec::new(),
+            group_stack: Vec::new(),
             options,
         })
     }
@@ -124,7 +125,7 @@ impl ObjExporter {
         if self.options.include_normals {
             for i in (0..tri.normals.len()).step_by(3) {
                 let n = glam::Vec3::new(tri.normals[i], tri.normals[i + 1], tri.normals[i + 2]);
-                let transformed = transform.transform_vector3(n).normalize();
+                let transformed = transform.transform_vector3(n).normalize_or_zero();
                 writeln!(
                     self.obj_file,
                     "vn {} {} {}",
@@ -168,6 +169,32 @@ impl ObjExporter {
         Ok(())
     }
 
+    /// Export Line as OBJ `l` (line) primitive - matches C++ behavior (centerline, not tessellated cylinder).
+    fn write_line(
+        &mut self,
+        line: &crate::store::geometry::Line,
+        transform: &glam::Affine3A,
+        color: u32,
+        transparency: u32,
+    ) -> Result<(), ExportError> {
+        self.write_material(color, transparency)?;
+
+        // C++: canonical line from (a,0,0) to (b,0,0) in model space, then transformed
+        let a = glam::Vec3::new(line.start_radius, 0.0, 0.0);
+        let b = glam::Vec3::new(line.end_radius, 0.0, 0.0);
+        let a_world = transform.transform_point3(a);
+        let b_world = transform.transform_point3(b);
+
+        writeln!(self.obj_file, "usemtl mat_{}_{}", color, transparency)?;
+        writeln!(self.obj_file, "v {} {} {}", a_world.x, a_world.y, a_world.z)?;
+        writeln!(self.obj_file, "v {} {} {}", b_world.x, b_world.y, b_world.z)?;
+        writeln!(self.obj_file, "l -1 -2")?;
+        writeln!(self.obj_file)?;
+
+        self.vertex_offset += 2;
+        Ok(())
+    }
+
     pub fn finish(mut self) -> Result<(), ExportError> {
         self.obj_file.flush()?;
         self.mtl_file.flush()?;
@@ -176,33 +203,35 @@ impl ObjExporter {
 }
 
 impl Visitor for ObjExporter {
-    fn visit_node(&mut self, node: &Node, store: &Store) {
+    fn visit_node(&mut self, _node_id: NodeId, node: &Node, store: &mut Store) {
         match &node.kind {
             NodeKind::Group(group) => {
                 let name = store.get_string(group.name);
-                self.current_path.push(name.to_string());
+                self.group_stack.push(name.to_string());
 
-                // Write object group
-                let full_name = self.current_path.join("/");
+                // Write "o" with group path only (matches C++: stack[0]/stack[1]/...)
+                let full_name = self.group_stack.join("/");
                 let _ = writeln!(self.obj_file, "o {}", full_name);
             }
-            NodeKind::Model(model) => {
-                let name = store.get_string(model.name);
-                self.current_path.push(name.to_string());
-
-                let full_name = self.current_path.join("/");
-                let _ = writeln!(self.obj_file, "o {}", full_name);
-            }
-            NodeKind::File(_) => {
-                self.current_path.push("File".to_string());
-            }
+            NodeKind::Model(_) | NodeKind::File(_) => {}
         }
     }
 
-    fn visit_geometry(&mut self, geometry: &Geometry, _store: &Store) {
-        // Extract scale from transform matrix
+    fn visit_geometry(
+        &mut self,
+        _geometry_id: GeometryId,
+        geometry: &Geometry,
+        _store: &mut Store,
+    ) {
+        // Line: export as OBJ `l` primitive (centerline only) - matches C++ behavior
+        if let GeometryKind::Line(line) = &geometry.kind {
+            let _ = self.write_line(line, &geometry.transform, geometry.color, geometry.transparency);
+            return;
+        }
+
+        // Extract scale from transform matrix for tessellation
         let scale = crate::export::tessellator::get_scale(&geometry.transform.matrix3.into());
-        
+
         let tri = match &geometry.kind {
             GeometryKind::Cylinder(cyl) => cyl.tessellate(self.options.tolerance, scale),
             GeometryKind::Sphere(sphere) => sphere.tessellate(self.options.tolerance, scale),
@@ -215,8 +244,8 @@ impl Visitor for ObjExporter {
             GeometryKind::EllipticalDish(dish) => dish.tessellate(self.options.tolerance, scale),
             GeometryKind::SphericalDish(dish) => dish.tessellate(self.options.tolerance, scale),
             GeometryKind::Snout(snout) => snout.tessellate(self.options.tolerance, scale),
-            GeometryKind::Line(line) => line.tessellate(self.options.tolerance, scale),
             GeometryKind::FacetGroup(fg) => fg.tessellate(self.options.tolerance, scale),
+            GeometryKind::Line(_) => unreachable!(), // handled above
         };
 
         let _ = self.write_triangulation(
@@ -227,18 +256,9 @@ impl Visitor for ObjExporter {
         );
     }
 
-    fn leave_node(&mut self, _node: &Node, _store: &Store) {
-        if !self.current_path.is_empty() {
-            self.current_path.pop();
-        }
-    }
-}
-
-impl Drop for ObjExporter {
-    fn drop(&mut self) {
-        // Pop the current path when leaving a node
-        if !self.current_path.is_empty() {
-            self.current_path.pop();
+    fn leave_node(&mut self, _node_id: NodeId, node: &Node, _store: &mut Store) {
+        if matches!(node.kind, NodeKind::Group(_)) && !self.group_stack.is_empty() {
+            self.group_stack.pop();
         }
     }
 }

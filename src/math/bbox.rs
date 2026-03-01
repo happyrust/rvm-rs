@@ -58,6 +58,21 @@ impl BBox3 {
     pub fn is_valid(&self) -> bool {
         self.min.x <= self.max.x && self.min.y <= self.max.y && self.min.z <= self.max.z
     }
+
+    /// Calculate the diagonal length of the bounding box
+    pub fn diagonal_length(&self) -> f32 {
+        (self.max - self.min).length()
+    }
+
+    /// Calculate the size (dimensions) of the bounding box
+    pub fn size(&self) -> Vec3 {
+        self.max - self.min
+    }
+
+    /// Calculate the center point of the bounding box
+    pub fn center(&self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
 }
 
 impl Default for BBox3 {

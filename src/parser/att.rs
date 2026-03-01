@@ -103,9 +103,7 @@ fn find_child_group_by_name(
     name: &str,
     used: &HashSet<NodeId>,
 ) -> Option<NodeId> {
-    let mut child = store
-        .get_node(parent)
-        .and_then(|node| node.first_child);
+    let mut child = store.get_node(parent).and_then(|node| node.first_child);
 
     while let Some(id) = child {
         if !used.contains(&id) {

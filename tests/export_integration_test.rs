@@ -14,6 +14,7 @@ fn create_test_store() -> Store {
         translation: glam::Vec3::new(0.0, 0.0, 0.0),
         material: 0xFF0000,
         transparency: 0,
+        id: -1,
         bbox_world: rvm_rs::math::BBox3::new(),
         first_geometry: None,
         attributes: vec![],
@@ -30,6 +31,7 @@ fn create_test_store() -> Store {
     if let Some(geo) = store.get_geometry_mut(geo_id) {
         geo.color = 0xFF0000; // Red
         geo.transparency = 0;
+        geo.color_rgb = geo.color;
         geo.transform = glam::Affine3A::from_translation(glam::Vec3::new(0.0, 0.0, 0.0));
     }
 
@@ -39,6 +41,7 @@ fn create_test_store() -> Store {
     if let Some(geo) = store.get_geometry_mut(geo_id2) {
         geo.color = 0x00FF00; // Green
         geo.transparency = 0;
+        geo.color_rgb = geo.color;
         geo.transform = glam::Affine3A::from_translation(glam::Vec3::new(3.0, 0.0, 0.0));
     }
 
@@ -50,6 +53,7 @@ fn create_test_store() -> Store {
     if let Some(geo) = store.get_geometry_mut(geo_id3) {
         geo.color = 0x0000FF; // Blue
         geo.transparency = 50; // Semi-transparent
+        geo.color_rgb = geo.color;
         geo.transform = glam::Affine3A::from_translation(glam::Vec3::new(-3.0, 0.0, 0.0));
     }
 
@@ -58,7 +62,7 @@ fn create_test_store() -> Store {
 
 #[test]
 fn test_obj_export_integration() {
-    let store = create_test_store();
+    let mut store = create_test_store();
     let temp_dir = std::env::temp_dir();
     let obj_path = temp_dir.join("test_integration.obj");
     let mtl_path = temp_dir.join("test_integration.mtl");
@@ -71,7 +75,7 @@ fn test_obj_export_integration() {
     };
 
     let mut exporter = ObjExporter::new(obj_path.to_str().unwrap(), options).unwrap();
-    traverse(&store, &mut exporter);
+    traverse(&mut store, &mut exporter);
     exporter.finish().unwrap();
 
     // Verify files were created
@@ -105,13 +109,13 @@ fn test_obj_export_integration() {
 
 #[test]
 fn test_json_export_integration() {
-    let store = create_test_store();
+    let mut store = create_test_store();
     let temp_dir = std::env::temp_dir();
     let json_path = temp_dir.join("test_integration.json");
 
     // Export to JSON
     let mut exporter = JsonExporter::new();
-    traverse(&store, &mut exporter);
+    traverse(&mut store, &mut exporter);
     exporter.write_to_file(json_path.to_str().unwrap()).unwrap();
 
     // Verify file was created
@@ -130,7 +134,7 @@ fn test_json_export_integration() {
 
 #[test]
 fn test_gltf_export_integration() {
-    let store = create_test_store();
+    let mut store = create_test_store();
     let temp_dir = std::env::temp_dir();
     let gltf_path = temp_dir.join("test_integration.gltf");
 
@@ -145,7 +149,7 @@ fn test_gltf_export_integration() {
     };
 
     let mut exporter = GltfExporter::new(options);
-    traverse(&store, &mut exporter);
+    traverse(&mut store, &mut exporter);
     exporter.write_to_file(gltf_path.to_str().unwrap()).unwrap();
 
     // Verify file was created
@@ -184,7 +188,7 @@ fn test_gltf_export_integration() {
 
 #[test]
 fn test_glb_export_integration() {
-    let store = create_test_store();
+    let mut store = create_test_store();
     let temp_dir = std::env::temp_dir();
     let glb_path = temp_dir.join("test_integration.glb");
 
@@ -199,7 +203,7 @@ fn test_glb_export_integration() {
     };
 
     let mut exporter = GltfExporter::new(options);
-    traverse(&store, &mut exporter);
+    traverse(&mut store, &mut exporter);
     exporter.write_to_file(glb_path.to_str().unwrap()).unwrap();
 
     // Verify file was created
@@ -226,7 +230,7 @@ fn test_glb_export_integration() {
 
 #[test]
 fn test_multiple_export_formats() {
-    let store = create_test_store();
+    let mut store = create_test_store();
     let temp_dir = std::env::temp_dir();
 
     let obj_path = temp_dir.join("test_multi.obj");
@@ -236,17 +240,17 @@ fn test_multiple_export_formats() {
     // Export to all formats
     let mut obj_exporter =
         ObjExporter::new(obj_path.to_str().unwrap(), ObjExportOptions::default()).unwrap();
-    traverse(&store, &mut obj_exporter);
+    traverse(&mut store, &mut obj_exporter);
     obj_exporter.finish().unwrap();
 
     let mut json_exporter = JsonExporter::new();
-    traverse(&store, &mut json_exporter);
+    traverse(&mut store, &mut json_exporter);
     json_exporter
         .write_to_file(json_path.to_str().unwrap())
         .unwrap();
 
     let mut gltf_exporter = GltfExporter::new(GltfExportOptions::default());
-    traverse(&store, &mut gltf_exporter);
+    traverse(&mut store, &mut gltf_exporter);
     gltf_exporter
         .write_to_file(gltf_path.to_str().unwrap())
         .unwrap();

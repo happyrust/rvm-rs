@@ -43,6 +43,7 @@ pub struct GroupNode {
     pub translation: glam::Vec3,
     pub material: u32,
     pub transparency: u32,
+    pub id: i32,
     pub bbox_world: BBox3,
     pub first_geometry: Option<GeometryId>,
     pub attributes: Vec<Attribute>,

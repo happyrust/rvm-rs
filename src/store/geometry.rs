@@ -1,4 +1,5 @@
 use crate::math::BBox3;
+use crate::store::strings::StringId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GeometryId(pub u32);
@@ -27,6 +28,9 @@ pub struct Geometry {
     pub bbox_world: BBox3,
     pub color: u32,
     pub transparency: u32,
+    pub sample_start_angle: f32,
+    pub color_name: Option<StringId>,
+    pub color_rgb: u32,
     pub next: Option<GeometryId>,
 }
 
@@ -84,10 +88,10 @@ pub struct Snout {
     pub height: f32,
     pub offset_x: f32,
     pub offset_y: f32,
-    pub unknown1: f32,
-    pub unknown2: f32,
-    pub unknown3: f32,
-    pub unknown4: f32,
+    pub bottom_shear_x: f32, // bshear[0] - bottom shear angle in X direction
+    pub bottom_shear_y: f32, // bshear[1] - bottom shear angle in Y direction
+    pub top_shear_x: f32,    // tshear[0] - top shear angle in X direction
+    pub top_shear_y: f32,    // tshear[1] - top shear angle in Y direction
 }
 
 #[derive(Debug, Clone)]
@@ -113,7 +117,37 @@ pub struct FacetGroup {
 }
 
 #[derive(Debug, Clone)]
-pub struct Polygon {
+pub struct Contour {
     pub vertices: Vec<glam::Vec3>,
     pub normals: Vec<glam::Vec3>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Polygon {
+    pub contours: Vec<Contour>,
+}
+
+impl Polygon {
+    /// Total vertex count across all contours.
+    pub fn total_vertices(&self) -> usize {
+        self.contours.iter().map(|c| c.vertices.len()).sum()
+    }
+
+    /// Convenience: single-contour polygon vertices.
+    pub fn vertices(&self) -> &[glam::Vec3] {
+        if self.contours.len() == 1 {
+            &self.contours[0].vertices
+        } else {
+            &[]
+        }
+    }
+
+    /// Convenience: single-contour polygon normals.
+    pub fn normals(&self) -> &[glam::Vec3] {
+        if self.contours.len() == 1 {
+            &self.contours[0].normals
+        } else {
+            &[]
+        }
+    }
 }

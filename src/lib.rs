@@ -2,6 +2,7 @@ pub mod export;
 pub mod math;
 pub mod parser;
 pub mod store;
+pub mod transform;
 pub mod visitor;
 
 pub use export::{

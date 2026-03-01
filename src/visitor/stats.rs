@@ -1,4 +1,4 @@
-use crate::store::{Geometry, GeometryKind, Node, NodeKind, Store};
+use crate::store::{Geometry, GeometryId, GeometryKind, Node, NodeId, NodeKind, Store};
 use crate::visitor::Visitor;
 use std::collections::HashMap;
 
@@ -45,7 +45,7 @@ impl Default for StatsVisitor {
 }
 
 impl Visitor for StatsVisitor {
-    fn visit_node(&mut self, node: &Node, _store: &Store) {
+    fn visit_node(&mut self, _node_id: NodeId, node: &Node, _store: &mut Store) {
         match &node.kind {
             NodeKind::File(_) => self.file_count += 1,
             NodeKind::Model(_) => self.model_count += 1,
@@ -53,7 +53,12 @@ impl Visitor for StatsVisitor {
         }
     }
 
-    fn visit_geometry(&mut self, geometry: &Geometry, _store: &Store) {
+    fn visit_geometry(
+        &mut self,
+        _geometry_id: GeometryId,
+        geometry: &Geometry,
+        _store: &mut Store,
+    ) {
         self.geometry_count += 1;
 
         let type_name = match &geometry.kind {

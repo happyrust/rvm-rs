@@ -1,5 +1,5 @@
 use crate::export::{ExportError, Tessellate};
-use crate::store::{Geometry, GeometryKind, Node, NodeKind, Store};
+use crate::store::{Geometry, GeometryId, GeometryKind, Node, NodeId, NodeKind, Store};
 use crate::visitor::Visitor;
 use serde_json::{json, Map, Value as JsonValue};
 use std::collections::HashMap;
@@ -388,7 +388,7 @@ impl GltfExporter {
 }
 
 impl Visitor for GltfExporter {
-    fn visit_node(&mut self, node: &Node, store: &Store) {
+    fn visit_node(&mut self, _node_id: NodeId, node: &Node, store: &mut Store) {
         let node_idx = self.nodes.len();
 
         let mut gltf_node = match &node.kind {
@@ -444,10 +444,15 @@ impl Visitor for GltfExporter {
         self.node_stack.push(node_idx);
     }
 
-    fn visit_geometry(&mut self, geometry: &Geometry, _store: &Store) {
+    fn visit_geometry(
+        &mut self,
+        _geometry_id: GeometryId,
+        geometry: &Geometry,
+        _store: &mut Store,
+    ) {
         // Extract scale from transform matrix
         let scale = crate::export::tessellator::get_scale(&geometry.transform.matrix3.into());
-        
+
         let tri = match &geometry.kind {
             GeometryKind::Cylinder(cyl) => cyl.tessellate(self.options.tolerance, scale),
             GeometryKind::Sphere(sphere) => sphere.tessellate(self.options.tolerance, scale),
@@ -486,7 +491,7 @@ impl Visitor for GltfExporter {
         let mut transformed_normals = Vec::new();
         for i in (0..tri.normals.len()).step_by(3) {
             let n = glam::Vec3::new(tri.normals[i], tri.normals[i + 1], tri.normals[i + 2]);
-            let transformed = transform.transform_vector3(n).normalize();
+            let transformed = transform.transform_vector3(n).normalize_or_zero();
             transformed_normals.push(transformed.x);
             transformed_normals.push(transformed.y);
             transformed_normals.push(transformed.z);
@@ -521,7 +526,7 @@ impl Visitor for GltfExporter {
         }
     }
 
-    fn leave_node(&mut self, _node: &Node, _store: &Store) {
+    fn leave_node(&mut self, _node_id: NodeId, _node: &Node, _store: &mut Store) {
         self.node_stack.pop();
     }
 }

@@ -1,8 +1,10 @@
+pub mod cache;
 pub mod gltf;
 pub mod json;
 pub mod obj;
 pub mod tessellator;
 
+pub use cache::{CacheStats, GeometryCache};
 pub use gltf::{GltfExportOptions, GltfExporter};
 pub use json::JsonExporter;
 pub use obj::{ObjExportOptions, ObjExporter};
@@ -144,6 +146,7 @@ mod tests {
             translation: glam::Vec3::ZERO,
             material: 0xFF0000, // Red
             transparency: 0,
+            id: -1,
             bbox_world: crate::math::BBox3::new(),
             first_geometry: None,
             attributes: Vec::new(),
@@ -160,6 +163,7 @@ mod tests {
         if let Some(geo1) = store.get_geometry_mut(geo1_id) {
             geo1.color = 0xFF0000;
             geo1.transparency = 0;
+            geo1.color_rgb = geo1.color;
         }
 
         let cyl2 = GeometryKind::Cylinder(Cylinder {
@@ -170,10 +174,11 @@ mod tests {
         if let Some(geo2) = store.get_geometry_mut(geo2_id) {
             geo2.color = 0xFF0000; // Same color
             geo2.transparency = 0;
+            geo2.color_rgb = geo2.color;
         }
 
         // Use the traverse function to visit nodes
-        crate::visitor::traverse(&store, &mut exporter);
+        crate::visitor::traverse(&mut store, &mut exporter);
 
         let _ = exporter.finish();
 

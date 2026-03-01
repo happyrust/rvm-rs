@@ -200,6 +200,7 @@ fn parse_cntb(data: &[u8], store: &mut Store) -> Result<(), ParseError> {
         translation,
         material,
         transparency: 0,
+        id: -1,
         bbox_world: crate::math::BBox3::new(),
         first_geometry: None,
         attributes: Vec::new(),
@@ -229,36 +230,41 @@ fn parse_geometry_chunk(
     geo_type: GeometryType,
     current_color: u32,
 ) -> Result<(), ParseError> {
-    // Minimum size: version(4) + kind(4) + matrix(48) + bbox(24) = 80 bytes
-    if data.len() < 80 {
+    // Minimum size: version(4) + flags(4) + kind(4) + matrix(48) + bbox(24) = 84 bytes
+    if data.len() < 84 {
         return Err(ParseError::UnexpectedEof { offset: data.len() });
     }
 
     let mut pos = 0usize;
     let _version = read_u32(data, &mut pos)?;
+    let _flags = read_u32(data, &mut pos)?;
     let kind_id = read_u32(data, &mut pos)?;
 
-    // Read 3x4 transformation matrix (row-major order in file)
-    let m00 = read_f32(data, &mut pos)?;
-    let m01 = read_f32(data, &mut pos)?;
-    let m02 = read_f32(data, &mut pos)?;
-    let m03 = read_f32(data, &mut pos)?;
+    // RVM 使用列优先 3x4 矩阵，字段顺序为：
+    // m00 m10 m20 m01 m11 m21 m02 m12 m22 m03 m13 m23
+    let mut m = [0f32; 12];
+    for item in &mut m {
+        *item = read_f32(data, &mut pos)?;
+    }
 
-    let m10 = read_f32(data, &mut pos)?;
-    let m11 = read_f32(data, &mut pos)?;
-    let m12 = read_f32(data, &mut pos)?;
-    let m13 = read_f32(data, &mut pos)?;
+    let m00 = m[0];
+    let m10 = m[1];
+    let m20 = m[2];
+    let m01 = m[3];
+    let m11 = m[4];
+    let m21 = m[5];
+    let m02 = m[6];
+    let m12 = m[7];
+    let m22 = m[8];
+    let m03 = m[9];
+    let m13 = m[10];
+    let m23 = m[11];
 
-    let m20 = read_f32(data, &mut pos)?;
-    let m21 = read_f32(data, &mut pos)?;
-    let m22 = read_f32(data, &mut pos)?;
-    let m23 = read_f32(data, &mut pos)?;
-
-    let mat = Mat3A::from_cols(
-        glam::Vec3A::new(m00, m10, m20),
-        glam::Vec3A::new(m01, m11, m21),
-        glam::Vec3A::new(m02, m12, m22),
-    );
+    let mat = Mat3A::from_cols_array(&[
+        m00, m10, m20, //
+        m01, m11, m21, //
+        m02, m12, m22,
+    ]);
     let translation = Vec3::new(m03, m13, m23);
     let transform = Affine3A::from_mat3_translation(mat.into(), translation);
 
@@ -274,33 +280,15 @@ fn parse_geometry_chunk(
     );
     let bbox = crate::math::BBox3::from_min_max(bbox_min, bbox_max);
 
-    // Handle transparency for OBST and INSU types
-    let mut transparency = 0u32;
-    let has_transparency = matches!(geo_type, GeometryType::Obstruction | GeometryType::Insulation);
-    
-    if has_transparency && pos + 4 <= data.len() {
-        transparency = data[pos] as u32;
-        pos += 4; // Skip 4 bytes (transparency + 3 padding bytes)
-    }
-
     let remaining = &data[pos..];
     let kind = match kind_id {
         1 if remaining.len() >= 28 => {
             // Pyramid
             let mut p = 0;
             GeometryKind::Pyramid(Pyramid {
-                bottom: [
-                    read_f32(remaining, &mut p)?,
-                    read_f32(remaining, &mut p)?,
-                ],
-                top: [
-                    read_f32(remaining, &mut p)?,
-                    read_f32(remaining, &mut p)?,
-                ],
-                offset: [
-                    read_f32(remaining, &mut p)?,
-                    read_f32(remaining, &mut p)?,
-                ],
+                bottom: [read_f32(remaining, &mut p)?, read_f32(remaining, &mut p)?],
+                top: [read_f32(remaining, &mut p)?, read_f32(remaining, &mut p)?],
+                offset: [read_f32(remaining, &mut p)?, read_f32(remaining, &mut p)?],
                 height: read_f32(remaining, &mut p)?,
             })
         }
@@ -359,10 +347,10 @@ fn parse_geometry_chunk(
                 height: read_f32(remaining, &mut p)?,
                 offset_x: read_f32(remaining, &mut p)?,
                 offset_y: read_f32(remaining, &mut p)?,
-                unknown1: read_f32(remaining, &mut p)?,
-                unknown2: read_f32(remaining, &mut p)?,
-                unknown3: read_f32(remaining, &mut p)?,
-                unknown4: read_f32(remaining, &mut p)?,
+                bottom_shear_x: read_f32(remaining, &mut p)?,
+                bottom_shear_y: read_f32(remaining, &mut p)?,
+                top_shear_x: read_f32(remaining, &mut p)?,
+                top_shear_y: read_f32(remaining, &mut p)?,
             })
         }
         8 if remaining.len() >= 8 => {
@@ -404,29 +392,14 @@ fn parse_geometry_chunk(
         .current_node()
         .or_else(|| store.roots().last().copied())
     {
-        // Inherit transparency from parent if not explicitly set
-        let final_transparency = if !has_transparency {
-            if let Some(parent) = store.get_node(parent_id) {
-                if let NodeKind::Group(ref group) = parent.kind {
-                    group.transparency
-                } else {
-                    0
-                }
-            } else {
-                0
-            }
-        } else {
-            transparency
-        };
-
         let geo_id = store.new_geometry(parent_id, kind);
         if let Some(geo) = store.get_geometry_mut(geo_id) {
             geo.transform = transform;
             geo.geo_type = geo_type;
             geo.color = current_color;
+            geo.color_rgb = current_color;
             geo.bbox_local = bbox;
             geo.bbox_world = bbox.transform(&transform);
-            geo.transparency = final_transparency;
         }
     }
 
@@ -446,19 +419,16 @@ fn parse_facet_group(data: &[u8]) -> Result<FacetGroup, ParseError> {
         if pos + 4 > data.len() {
             break;
         }
-        // Number of contours in this polygon
         let num_contours = read_u32(data, &mut pos)? as usize;
-
-        // For now, we flatten all contours into a single polygon
-        // C++ uses Polygon->Contour->Vertices structure
-        let mut all_vertices = Vec::new();
-        let mut all_normals = Vec::new();
+        let mut contours = Vec::with_capacity(num_contours);
 
         for _ in 0..num_contours {
             if pos + 4 > data.len() {
                 return Err(ParseError::UnexpectedEof { offset: pos });
             }
             let vertex_count = read_u32(data, &mut pos)? as usize;
+            let mut vertices = Vec::with_capacity(vertex_count);
+            let mut normals = Vec::with_capacity(vertex_count);
 
             for _ in 0..vertex_count {
                 if pos + 24 > data.len() {
@@ -470,15 +440,14 @@ fn parse_facet_group(data: &[u8]) -> Result<FacetGroup, ParseError> {
                 let nx = read_f32(data, &mut pos)?;
                 let ny = read_f32(data, &mut pos)?;
                 let nz = read_f32(data, &mut pos)?;
-                all_vertices.push(Vec3::new(x, y, z));
-                all_normals.push(Vec3::new(nx, ny, nz));
+                vertices.push(Vec3::new(x, y, z));
+                normals.push(Vec3::new(nx, ny, nz));
             }
+
+            contours.push(Contour { vertices, normals });
         }
 
-        polygons.push(Polygon {
-            vertices: all_vertices,
-            normals: all_normals,
-        });
+        polygons.push(Polygon { contours });
     }
 
     Ok(FacetGroup { polygons })
@@ -580,10 +549,10 @@ fn parse_geometry_kind(input: &[u8], kind_id: u32) -> IResult<&[u8], GeometryKin
             let (input, height) = parse_f32(input)?;
             let (input, ox) = parse_f32(input)?;
             let (input, oy) = parse_f32(input)?;
-            let (input, u1) = parse_f32(input)?;
-            let (input, u2) = parse_f32(input)?;
-            let (input, u3) = parse_f32(input)?;
-            let (input, u4) = parse_f32(input)?;
+            let (input, bshear_x) = parse_f32(input)?;
+            let (input, bshear_y) = parse_f32(input)?;
+            let (input, tshear_x) = parse_f32(input)?;
+            let (input, tshear_y) = parse_f32(input)?;
 
             Ok((
                 input,
@@ -593,10 +562,10 @@ fn parse_geometry_kind(input: &[u8], kind_id: u32) -> IResult<&[u8], GeometryKin
                     height,
                     offset_x: ox,
                     offset_y: oy,
-                    unknown1: u1,
-                    unknown2: u2,
-                    unknown3: u3,
-                    unknown4: u4,
+                    bottom_shear_x: bshear_x,
+                    bottom_shear_y: bshear_y,
+                    top_shear_x: tshear_x,
+                    top_shear_y: tshear_y,
                 }),
             ))
         }
@@ -645,7 +614,9 @@ fn parse_geometry_kind(input: &[u8], kind_id: u32) -> IResult<&[u8], GeometryKin
 
                 let (rest, normal) = parse_vec3(vert_remaining)?;
                 let normals = vec![normal; num_vertices as usize];
-                polygons.push(Polygon { vertices, normals });
+                polygons.push(Polygon {
+                    contours: vec![Contour { vertices, normals }],
+                });
                 remaining = rest;
             }
 

@@ -10,7 +10,13 @@ memmap2 = "0.9"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+regex = "1.10"
+spade = "2"
 
 [dev-dependencies]
 proptest = "1.0"
 criterion = "0.5"
+
+[[bench]]
+name = "tessellation_benchmark"
+harness = false

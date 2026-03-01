@@ -1,45 +1,48 @@
+pub mod add_bbox;
+pub mod colorizer;
+pub mod dump_names;
 pub mod stats;
 
-use crate::store::{Geometry, Node, NodeId, Store};
+use crate::store::{Geometry, GeometryId, Node, NodeId, Store};
 
 pub trait Visitor {
-    fn visit_node(&mut self, node: &Node, store: &Store);
-    fn visit_geometry(&mut self, geometry: &Geometry, store: &Store);
-    fn leave_node(&mut self, _node: &Node, _store: &Store) {}
+    fn visit_node(&mut self, node_id: NodeId, node: &Node, store: &mut Store);
+    fn visit_geometry(&mut self, geometry_id: GeometryId, geometry: &Geometry, store: &mut Store);
+    fn leave_node(&mut self, _node_id: NodeId, _node: &Node, _store: &mut Store) {}
 }
 
-pub fn traverse<V: Visitor>(store: &Store, visitor: &mut V) {
-    for &root_id in store.roots() {
+pub fn traverse<V: Visitor>(store: &mut Store, visitor: &mut V) {
+    let root_ids: Vec<NodeId> = store.roots().to_vec();
+    for root_id in root_ids {
         traverse_node(store, root_id, visitor);
     }
 }
 
-fn traverse_node<V: Visitor>(store: &Store, node_id: NodeId, visitor: &mut V) {
-    if let Some(node) = store.get_node(node_id) {
-        visitor.visit_node(node, store);
+fn traverse_node<V: Visitor>(store: &mut Store, node_id: NodeId, visitor: &mut V) {
+    let node = match store.get_node(node_id) {
+        Some(node) => node.clone(),
+        None => return,
+    };
 
-        // Visit geometries if this is a group node
-        if let crate::store::NodeKind::Group(ref group) = node.kind {
-            let mut geo_id = group.first_geometry;
-            while let Some(id) = geo_id {
-                if let Some(geometry) = store.get_geometry(id) {
-                    visitor.visit_geometry(geometry, store);
-                    geo_id = geometry.next;
-                }
-            }
+    visitor.visit_node(node_id, &node, store);
+
+    if let crate::store::NodeKind::Group(ref group) = node.kind {
+        let mut geo_id = group.first_geometry;
+        while let Some(id) = geo_id {
+            let (geometry, next_id) = match store.get_geometry(id) {
+                Some(geometry) => (geometry.clone(), geometry.next),
+                None => break,
+            };
+            visitor.visit_geometry(id, &geometry, store);
+            geo_id = next_id;
         }
-
-        // Visit children
-        let mut child_id = node.first_child;
-        while let Some(id) = child_id {
-            traverse_node(store, id, visitor);
-            if let Some(child) = store.get_node(id) {
-                child_id = child.next;
-            } else {
-                break;
-            }
-        }
-
-        visitor.leave_node(node, store);
     }
+
+    let mut child_id = node.first_child;
+    while let Some(id) = child_id {
+        traverse_node(store, id, visitor);
+        child_id = store.get_node(id).and_then(|child| child.next);
+    }
+
+    visitor.leave_node(node_id, &node, store);
 }

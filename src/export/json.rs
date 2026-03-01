@@ -1,5 +1,5 @@
 use crate::export::ExportError;
-use crate::store::{Geometry, GeometryKind, Node, NodeKind, Store};
+use crate::store::{Geometry, GeometryId, GeometryKind, Node, NodeId, NodeKind, Store};
 use crate::visitor::Visitor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -82,7 +82,7 @@ impl Default for JsonExporter {
 }
 
 impl Visitor for JsonExporter {
-    fn visit_node(&mut self, node: &Node, store: &Store) {
+    fn visit_node(&mut self, _node_id: NodeId, node: &Node, store: &mut Store) {
         let json_node = match &node.kind {
             NodeKind::File(file) => {
                 let mut attributes = HashMap::new();
@@ -157,7 +157,12 @@ impl Visitor for JsonExporter {
         self.node_stack.push(json_node);
     }
 
-    fn visit_geometry(&mut self, geometry: &Geometry, _store: &Store) {
+    fn visit_geometry(
+        &mut self,
+        _geometry_id: GeometryId,
+        geometry: &Geometry,
+        _store: &mut Store,
+    ) {
         let kind_name = match &geometry.kind {
             GeometryKind::Cylinder(_) => "Cylinder",
             GeometryKind::Sphere(_) => "Sphere",
@@ -186,7 +191,7 @@ impl Visitor for JsonExporter {
         }
     }
 
-    fn leave_node(&mut self, _node: &Node, _store: &Store) {
+    fn leave_node(&mut self, _node_id: NodeId, _node: &Node, _store: &mut Store) {
         if let Some(node) = self.node_stack.pop() {
             if let Some(parent) = self.node_stack.last_mut() {
                 parent.children.push(node);
