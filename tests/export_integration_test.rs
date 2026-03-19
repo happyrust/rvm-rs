@@ -3,6 +3,7 @@ use rvm_rs::store::{GroupNode, NodeKind};
 use rvm_rs::{
     traverse, GltfExportOptions, GltfExporter, JsonExporter, ObjExportOptions, ObjExporter, Store,
 };
+use serde_json::Value;
 use std::fs;
 
 fn create_test_store() -> Store {
@@ -58,6 +59,102 @@ fn create_test_store() -> Store {
     }
 
     store
+}
+
+fn create_nested_store() -> Store {
+    let mut store = Store::new();
+
+    let root = GroupNode {
+        name: store.intern_string("Root"),
+        translation: glam::Vec3::ZERO,
+        material: 0,
+        transparency: 0,
+        id: -1,
+        bbox_world: rvm_rs::math::BBox3::new(),
+        first_geometry: None,
+        attributes: vec![],
+    };
+
+    let root_id = store.new_node(NodeKind::Group(root));
+    store.push_node_context(root_id);
+
+    let child = GroupNode {
+        name: store.intern_string("Child"),
+        translation: glam::Vec3::new(1.0, 2.0, 3.0),
+        material: 0,
+        transparency: 0,
+        id: -1,
+        bbox_world: rvm_rs::math::BBox3::new(),
+        first_geometry: None,
+        attributes: vec![],
+    };
+    let _child_id = store.new_node(NodeKind::Group(child));
+    store.pop_node_context();
+
+    store
+}
+
+fn create_merge_candidate_store() -> Store {
+    let mut store = Store::new();
+
+    let group_node = GroupNode {
+        name: store.intern_string("MergeGroup"),
+        translation: glam::Vec3::ZERO,
+        material: 0,
+        transparency: 0,
+        id: -1,
+        bbox_world: rvm_rs::math::BBox3::new(),
+        first_geometry: None,
+        attributes: vec![],
+    };
+
+    let node_id = store.new_node(NodeKind::Group(group_node));
+
+    let first = GeometryKind::Cylinder(Cylinder {
+        radius: 1.0,
+        height: 2.0,
+    });
+    let first_id = store.new_geometry(node_id, first);
+    if let Some(geo) = store.get_geometry_mut(first_id) {
+        geo.color = 0xFF0000;
+        geo.transparency = 0;
+        geo.color_rgb = geo.color;
+    }
+
+    let second = GeometryKind::Sphere(Sphere { radius: 0.5 });
+    let second_id = store.new_geometry(node_id, second);
+    if let Some(geo) = store.get_geometry_mut(second_id) {
+        geo.color = 0xFF0000;
+        geo.transparency = 0;
+        geo.color_rgb = geo.color;
+        geo.transform = glam::Affine3A::from_translation(glam::Vec3::new(3.0, 0.0, 0.0));
+    }
+
+    let third = GeometryKind::Box(GeoBox {
+        lengths: [1.0, 1.0, 1.0],
+    });
+    let third_id = store.new_geometry(node_id, third);
+    if let Some(geo) = store.get_geometry_mut(third_id) {
+        geo.color = 0x0000FF;
+        geo.transparency = 0;
+        geo.color_rgb = geo.color;
+        geo.transform = glam::Affine3A::from_translation(glam::Vec3::new(-3.0, 0.0, 0.0));
+    }
+
+    store
+}
+
+fn export_gltf_to_value(store: &mut Store, options: GltfExportOptions, file_name: &str) -> Value {
+    let temp_dir = std::env::temp_dir();
+    let path = temp_dir.join(file_name);
+
+    let mut exporter = GltfExporter::new(options);
+    traverse(store, &mut exporter);
+    exporter.write_to_file(path.to_str().unwrap()).unwrap();
+
+    let content = fs::read_to_string(&path).unwrap();
+    let _ = fs::remove_file(&path);
+    serde_json::from_str(&content).unwrap()
 }
 
 #[test]
@@ -265,4 +362,89 @@ fn test_multiple_export_formats() {
     let _ = fs::remove_file(temp_dir.join("test_multi.mtl"));
     let _ = fs::remove_file(&json_path);
     let _ = fs::remove_file(&gltf_path);
+}
+
+#[test]
+fn test_gltf_scene_contains_only_root_nodes() {
+    let mut store = create_nested_store();
+    let gltf = export_gltf_to_value(
+        &mut store,
+        GltfExportOptions::default(),
+        "test_scene_roots.gltf",
+    );
+
+    let scene_nodes = gltf["scenes"][0]["nodes"].as_array().unwrap();
+    assert_eq!(
+        scene_nodes.len(),
+        1,
+        "scene should contain only the root node"
+    );
+    assert_eq!(scene_nodes[0].as_u64(), Some(0));
+
+    let root_children = gltf["nodes"][0]["children"].as_array().unwrap();
+    assert_eq!(
+        root_children.len(),
+        1,
+        "root node should still reference child"
+    );
+    assert_eq!(root_children[0].as_u64(), Some(1));
+}
+
+#[test]
+fn test_gltf_single_node_preserves_all_geometries() {
+    let mut store = create_test_store();
+    let gltf = export_gltf_to_value(
+        &mut store,
+        GltfExportOptions::default(),
+        "test_multi_geometry_node.gltf",
+    );
+
+    let meshes = gltf["meshes"].as_array().unwrap();
+    assert_eq!(
+        meshes.len(),
+        1,
+        "all geometries on one node should share one mesh"
+    );
+
+    let primitives = meshes[0]["primitives"].as_array().unwrap();
+    assert_eq!(
+        primitives.len(),
+        3,
+        "mesh should keep one primitive per geometry"
+    );
+    assert_eq!(gltf["nodes"][0]["mesh"].as_u64(), Some(0));
+}
+
+#[test]
+fn test_gltf_merge_geometries_merges_same_material_primitives() {
+    let mut store = create_merge_candidate_store();
+    let no_merge = export_gltf_to_value(
+        &mut store,
+        GltfExportOptions::default(),
+        "test_merge_off.gltf",
+    );
+
+    let mut store = create_merge_candidate_store();
+    let merged = export_gltf_to_value(
+        &mut store,
+        GltfExportOptions {
+            merge_geometries: true,
+            ..GltfExportOptions::default()
+        },
+        "test_merge_on.gltf",
+    );
+
+    let no_merge_primitives = no_merge["meshes"][0]["primitives"].as_array().unwrap();
+    let merged_primitives = merged["meshes"][0]["primitives"].as_array().unwrap();
+
+    assert_eq!(
+        no_merge_primitives.len(),
+        3,
+        "baseline should preserve each geometry"
+    );
+    assert_eq!(
+        merged_primitives.len(),
+        2,
+        "merge mode should combine geometries with the same material"
+    );
 }

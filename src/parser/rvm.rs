@@ -282,7 +282,8 @@ fn parse_geometry_chunk(
 
     let remaining = &data[pos..];
     let kind = match kind_id {
-        1 if remaining.len() >= 28 => {
+        1 => {
+            ensure_geometry_payload(remaining, 28, pos)?;
             // Pyramid
             let mut p = 0;
             GeometryKind::Pyramid(Pyramid {
@@ -292,7 +293,8 @@ fn parse_geometry_chunk(
                 height: read_f32(remaining, &mut p)?,
             })
         }
-        2 if remaining.len() >= 12 => {
+        2 => {
+            ensure_geometry_payload(remaining, 12, pos)?;
             // Box
             let mut p = 0;
             GeometryKind::Box(Box {
@@ -303,7 +305,8 @@ fn parse_geometry_chunk(
                 ],
             })
         }
-        3 if remaining.len() >= 16 => {
+        3 => {
+            ensure_geometry_payload(remaining, 16, pos)?;
             // RectangularTorus
             let mut p = 0;
             GeometryKind::RectangularTorus(RectangularTorus {
@@ -313,7 +316,8 @@ fn parse_geometry_chunk(
                 angle: read_f32(remaining, &mut p)?,
             })
         }
-        4 if remaining.len() >= 12 => {
+        4 => {
+            ensure_geometry_payload(remaining, 12, pos)?;
             // CircularTorus
             let mut p = 0;
             GeometryKind::CircularTorus(CircularTorus {
@@ -322,7 +326,8 @@ fn parse_geometry_chunk(
                 angle: read_f32(remaining, &mut p)?,
             })
         }
-        5 if remaining.len() >= 8 => {
+        5 => {
+            ensure_geometry_payload(remaining, 8, pos)?;
             // EllipticalDish
             let mut p = 0;
             GeometryKind::EllipticalDish(EllipticalDish {
@@ -330,7 +335,8 @@ fn parse_geometry_chunk(
                 height: read_f32(remaining, &mut p)?,
             })
         }
-        6 if remaining.len() >= 8 => {
+        6 => {
+            ensure_geometry_payload(remaining, 8, pos)?;
             // SphericalDish
             let mut p = 0;
             GeometryKind::SphericalDish(SphericalDish {
@@ -338,7 +344,8 @@ fn parse_geometry_chunk(
                 height: read_f32(remaining, &mut p)?,
             })
         }
-        7 if remaining.len() >= 36 => {
+        7 => {
+            ensure_geometry_payload(remaining, 36, pos)?;
             // Snout
             let mut p = 0;
             GeometryKind::Snout(Snout {
@@ -353,7 +360,8 @@ fn parse_geometry_chunk(
                 top_shear_y: read_f32(remaining, &mut p)?,
             })
         }
-        8 if remaining.len() >= 8 => {
+        8 => {
+            ensure_geometry_payload(remaining, 8, pos)?;
             // Cylinder
             let mut p = 0;
             GeometryKind::Cylinder(Cylinder {
@@ -361,14 +369,16 @@ fn parse_geometry_chunk(
                 height: read_f32(remaining, &mut p)?,
             })
         }
-        9 if remaining.len() >= 4 => {
+        9 => {
+            ensure_geometry_payload(remaining, 4, pos)?;
             // Sphere
             let mut p = 0;
             GeometryKind::Sphere(Sphere {
                 radius: read_f32(remaining, &mut p)?,
             })
         }
-        10 if remaining.len() >= 8 => {
+        10 => {
+            ensure_geometry_payload(remaining, 8, pos)?;
             // Line
             let mut p = 0;
             GeometryKind::Line(Line {
@@ -381,11 +391,7 @@ fn parse_geometry_chunk(
             let facet = parse_facet_group(remaining)?;
             GeometryKind::FacetGroup(facet)
         }
-        _ => {
-            // Unknown geometry kind or insufficient data - create a box from bbox as fallback
-            let lengths = (bbox_max - bbox_min).to_array();
-            GeometryKind::Box(Box { lengths })
-        }
+        _ => return Err(ParseError::InvalidGeometryKind { kind: kind_id }),
     };
 
     if let Some(parent_id) = store
@@ -403,6 +409,19 @@ fn parse_geometry_chunk(
         }
     }
 
+    Ok(())
+}
+
+fn ensure_geometry_payload(
+    data: &[u8],
+    required: usize,
+    payload_offset: usize,
+) -> Result<(), ParseError> {
+    if data.len() < required {
+        return Err(ParseError::UnexpectedEof {
+            offset: payload_offset + required,
+        });
+    }
     Ok(())
 }
 

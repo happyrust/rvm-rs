@@ -1,6 +1,6 @@
 // Test conditional cap generation for Pyramid and Box geometries
 
-use rvm_rs::export::tessellator::{Tessellate, TessellateWithCaps};
+use rvm_rs::export::tessellator::Tessellate;
 use rvm_rs::store::geometry::{Box, Pyramid};
 
 #[test]
