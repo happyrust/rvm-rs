@@ -24,20 +24,19 @@ impl Default for ObjExportOptions {
 }
 
 pub struct ObjExporter {
-    obj_file: BufWriter<File>,
-    mtl_file: BufWriter<File>,
+    obj_file: BufWriter<Box<dyn Write>>,
+    mtl_file: BufWriter<Box<dyn Write>>,
     defined_materials: HashSet<u64>,
     vertex_offset: u32,
     normal_offset: u32,
     /// Group names only (for "o" output, matching C++ behavior - no File/Model prefix)
     group_stack: Vec<String>,
     options: ObjExportOptions,
+    error: Option<ExportError>,
 }
 
 impl ObjExporter {
     pub fn new(obj_path: &str, options: ObjExportOptions) -> Result<Self, ExportError> {
-        let obj_file = File::create(obj_path)?;
-
         // Create MTL file path
         let path = Path::new(obj_path);
         let mtl_path = path.with_extension("mtl");
@@ -47,10 +46,22 @@ impl ObjExporter {
             .ok_or_else(|| ExportError::InvalidPath("Invalid MTL path".to_string()))?
             .to_string();
 
-        let mtl_file = File::create(&mtl_path)?;
+        let obj_file = Box::new(File::create(obj_path)?) as Box<dyn Write>;
+        let mtl_file = Box::new(File::create(&mtl_path)?) as Box<dyn Write>;
 
-        let mut obj_writer = BufWriter::new(obj_file);
-        let mtl_writer = BufWriter::new(mtl_file);
+        Self::from_writers_with_capacity(obj_file, mtl_file, &mtl_name, options, 8 * 1024)
+    }
+
+    fn from_writers_with_capacity(
+        obj_file: Box<dyn Write>,
+        mtl_file: Box<dyn Write>,
+        mtl_name: &str,
+        options: ObjExportOptions,
+        capacity: usize,
+    ) -> Result<Self, ExportError> {
+        let capacity = capacity.max(1);
+        let mut obj_writer = BufWriter::with_capacity(capacity, obj_file);
+        let mtl_writer = BufWriter::with_capacity(capacity, mtl_file);
 
         // Write OBJ header
         writeln!(obj_writer, "# Exported from RVM")?;
@@ -65,11 +76,31 @@ impl ObjExporter {
             normal_offset: 1,
             group_stack: Vec::new(),
             options,
+            error: None,
         })
+    }
+
+    #[cfg(test)]
+    fn from_writers_for_test(
+        obj_file: Box<dyn Write>,
+        mtl_file: Box<dyn Write>,
+        mtl_name: &str,
+        options: ObjExportOptions,
+        capacity: usize,
+    ) -> Result<Self, ExportError> {
+        Self::from_writers_with_capacity(obj_file, mtl_file, mtl_name, options, capacity)
     }
 
     fn material_key(color: u32, transparency: u32) -> u64 {
         ((color as u64) << 32) | (transparency as u64)
+    }
+
+    fn record_result(&mut self, result: Result<(), ExportError>) {
+        if self.error.is_none() {
+            if let Err(err) = result {
+                self.error = Some(err);
+            }
+        }
     }
 
     fn write_material(&mut self, color: u32, transparency: u32) -> Result<(), ExportError> {
@@ -196,6 +227,9 @@ impl ObjExporter {
     }
 
     pub fn finish(mut self) -> Result<(), ExportError> {
+        if let Some(err) = self.error.take() {
+            return Err(err);
+        }
         self.obj_file.flush()?;
         self.mtl_file.flush()?;
         Ok(())
@@ -204,6 +238,10 @@ impl ObjExporter {
 
 impl Visitor for ObjExporter {
     fn visit_node(&mut self, _node_id: NodeId, node: &Node, store: &mut Store) {
+        if self.error.is_some() {
+            return;
+        }
+
         match &node.kind {
             NodeKind::Group(group) => {
                 let name = store.get_string(group.name);
@@ -211,7 +249,8 @@ impl Visitor for ObjExporter {
 
                 // Write "o" with group path only (matches C++: stack[0]/stack[1]/...)
                 let full_name = self.group_stack.join("/");
-                let _ = writeln!(self.obj_file, "o {}", full_name);
+                let result = writeln!(self.obj_file, "o {}", full_name).map_err(ExportError::from);
+                self.record_result(result);
             }
             NodeKind::Model(_) | NodeKind::File(_) => {}
         }
@@ -223,9 +262,19 @@ impl Visitor for ObjExporter {
         geometry: &Geometry,
         _store: &mut Store,
     ) {
+        if self.error.is_some() {
+            return;
+        }
+
         // Line: export as OBJ `l` primitive (centerline only) - matches C++ behavior
         if let GeometryKind::Line(line) = &geometry.kind {
-            let _ = self.write_line(line, &geometry.transform, geometry.color, geometry.transparency);
+            let result = self.write_line(
+                line,
+                &geometry.transform,
+                geometry.color,
+                geometry.transparency,
+            );
+            self.record_result(result);
             return;
         }
 
@@ -248,17 +297,92 @@ impl Visitor for ObjExporter {
             GeometryKind::Line(_) => unreachable!(), // handled above
         };
 
-        let _ = self.write_triangulation(
+        let result = self.write_triangulation(
             &tri,
             &geometry.transform,
             geometry.color,
             geometry.transparency,
         );
+        self.record_result(result);
     }
 
     fn leave_node(&mut self, _node_id: NodeId, node: &Node, _store: &mut Store) {
         if matches!(node.kind, NodeKind::Group(_)) && !self.group_stack.is_empty() {
             self.group_stack.pop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::geometry::Cylinder;
+    use crate::store::GroupNode;
+    use crate::visitor::traverse;
+    use std::io;
+
+    struct FailingWriter {
+        writes_before_error: usize,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.writes_before_error == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected write failure",
+                ));
+            }
+            self.writes_before_error -= 1;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn finish_reports_traversal_write_errors() {
+        let mut store = Store::new();
+        let group = GroupNode {
+            name: store.intern_string("group"),
+            translation: glam::Vec3::ZERO,
+            material: 0,
+            transparency: 0,
+            id: -1,
+            bbox_world: crate::math::BBox3::new(),
+            first_geometry: None,
+            attributes: Vec::new(),
+        };
+        let group_id = store.new_node(NodeKind::Group(group));
+        let geo_id = store.new_geometry(
+            group_id,
+            GeometryKind::Cylinder(Cylinder {
+                radius: 1.0,
+                height: 2.0,
+            }),
+        );
+        if let Some(geo) = store.get_geometry_mut(geo_id) {
+            geo.color = 0xFF0000;
+            geo.color_rgb = geo.color;
+        }
+
+        let obj_writer = Box::new(FailingWriter {
+            writes_before_error: 10,
+        }) as Box<dyn Write>;
+        let mtl_writer = Box::new(std::io::sink()) as Box<dyn Write>;
+        let mut exporter = ObjExporter::from_writers_for_test(
+            obj_writer,
+            mtl_writer,
+            "test.mtl",
+            ObjExportOptions::default(),
+            1,
+        )
+        .expect("constructor should succeed before traversal writes");
+
+        traverse(&mut store, &mut exporter);
+
+        assert!(exporter.finish().is_err(), "write error should be surfaced");
     }
 }

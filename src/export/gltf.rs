@@ -37,12 +37,25 @@ pub struct GltfExporter {
     materials: Vec<JsonValue>,
     buffer_data: Vec<u8>,
     defined_materials: HashMap<u64, u32>,
-    node_stack: Vec<usize>,
+    root_nodes: Vec<usize>,
+    node_stack: Vec<NodeFrame>,
     scene_min: Option<glam::Vec3>,
     scene_max: Option<glam::Vec3>,
     position_slices: Vec<(usize, usize)>, // (byte_offset, f32_len)
     position_accessors: Vec<u32>,
     options: GltfExportOptions,
+}
+
+struct NodeFrame {
+    node_idx: usize,
+    primitives: Vec<MeshPrimitive>,
+}
+
+struct MeshPrimitive {
+    material_idx: u32,
+    positions: Vec<f32>,
+    normals: Vec<f32>,
+    indices: Vec<u32>,
 }
 
 impl GltfExporter {
@@ -55,6 +68,7 @@ impl GltfExporter {
             materials: Vec::new(),
             buffer_data: Vec::new(),
             defined_materials: HashMap::new(),
+            root_nodes: Vec::new(),
             node_stack: Vec::new(),
             scene_min: None,
             scene_max: None,
@@ -208,6 +222,21 @@ impl GltfExporter {
         accessor_idx
     }
 
+    fn create_primitive_json(&mut self, primitive: MeshPrimitive) -> JsonValue {
+        let position_accessor = self.create_accessor_vec3_with_options(&primitive.positions, true);
+        let normal_accessor = self.create_accessor_vec3(&primitive.normals);
+        let indices_accessor = self.create_accessor_indices(&primitive.indices);
+
+        json!({
+            "attributes": {
+                "POSITION": position_accessor,
+                "NORMAL": normal_accessor
+            },
+            "indices": indices_accessor,
+            "material": primitive.material_idx
+        })
+    }
+
     fn update_scene_bounds(&mut self, min: &[f32; 3], max: &[f32; 3]) {
         let min_v = glam::Vec3::new(min[0], min[1], min[2]);
         let max_v = glam::Vec3::new(max[0], max[1], max[2]);
@@ -287,6 +316,85 @@ impl GltfExporter {
         }
     }
 
+    fn build_primitive(&mut self, geometry: &Geometry) -> MeshPrimitive {
+        // Extract scale from transform matrix
+        let scale = crate::export::tessellator::get_scale(&geometry.transform.matrix3.into());
+
+        let tri = match &geometry.kind {
+            GeometryKind::Cylinder(cyl) => cyl.tessellate(self.options.tolerance, scale),
+            GeometryKind::Sphere(sphere) => sphere.tessellate(self.options.tolerance, scale),
+            GeometryKind::Box(b) => b.tessellate(self.options.tolerance, scale),
+            GeometryKind::Pyramid(pyr) => pyr.tessellate(self.options.tolerance, scale),
+            GeometryKind::CircularTorus(torus) => torus.tessellate(self.options.tolerance, scale),
+            GeometryKind::RectangularTorus(torus) => {
+                torus.tessellate(self.options.tolerance, scale)
+            }
+            GeometryKind::EllipticalDish(dish) => dish.tessellate(self.options.tolerance, scale),
+            GeometryKind::SphericalDish(dish) => dish.tessellate(self.options.tolerance, scale),
+            GeometryKind::Snout(snout) => snout.tessellate(self.options.tolerance, scale),
+            GeometryKind::Line(line) => line.tessellate(self.options.tolerance, scale),
+            GeometryKind::FacetGroup(fg) => fg.tessellate(self.options.tolerance, scale),
+        };
+
+        let mut transform = geometry.transform;
+        if self.options.rotate_z_to_y {
+            let rotation = glam::Affine3A::from_mat3(glam::Mat3::from_rotation_x(
+                -std::f32::consts::FRAC_PI_2,
+            ));
+            transform = rotation * transform;
+        }
+
+        let mut positions = Vec::with_capacity(tri.vertices.len());
+        for i in (0..tri.vertices.len()).step_by(3) {
+            let v = glam::Vec3::new(tri.vertices[i], tri.vertices[i + 1], tri.vertices[i + 2]);
+            let transformed = transform.transform_point3(v);
+            positions.extend_from_slice(&[transformed.x, transformed.y, transformed.z]);
+        }
+
+        let mut normals = Vec::with_capacity(tri.normals.len());
+        for i in (0..tri.normals.len()).step_by(3) {
+            let n = glam::Vec3::new(tri.normals[i], tri.normals[i + 1], tri.normals[i + 2]);
+            let transformed = transform.transform_vector3(n).normalize_or_zero();
+            normals.extend_from_slice(&[transformed.x, transformed.y, transformed.z]);
+        }
+
+        MeshPrimitive {
+            material_idx: self.create_material(geometry.color, geometry.transparency),
+            positions,
+            normals,
+            indices: tri.indices,
+        }
+    }
+
+    fn push_primitive_to_current_node(&mut self, primitive: MeshPrimitive) {
+        let Some(frame) = self.node_stack.last_mut() else {
+            return;
+        };
+
+        if !self.options.merge_geometries {
+            frame.primitives.push(primitive);
+            return;
+        }
+
+        if let Some(existing) = frame
+            .primitives
+            .iter_mut()
+            .find(|candidate| candidate.material_idx == primitive.material_idx)
+        {
+            let vertex_offset = (existing.positions.len() / 3) as u32;
+            existing.positions.extend_from_slice(&primitive.positions);
+            existing.normals.extend_from_slice(&primitive.normals);
+            existing.indices.extend(
+                primitive
+                    .indices
+                    .into_iter()
+                    .map(|index| index + vertex_offset),
+            );
+        } else {
+            frame.primitives.push(primitive);
+        }
+    }
+
     pub fn write_to_file(mut self, path: &str) -> Result<(), ExportError> {
         if self.options.binary_format || path.ends_with(".glb") {
             self.write_glb(path)
@@ -307,7 +415,7 @@ impl GltfExporter {
             },
             "scene": 0,
             "scenes": [{
-                "nodes": (0..self.nodes.len()).collect::<Vec<_>>()
+                "nodes": self.root_nodes.clone()
             }],
             "nodes": self.nodes,
             "meshes": self.meshes,
@@ -342,7 +450,7 @@ impl GltfExporter {
             },
             "scene": 0,
             "scenes": [{
-                "nodes": (0..self.nodes.len()).collect::<Vec<_>>()
+                "nodes": self.root_nodes.clone()
             }],
             "nodes": self.nodes,
             "meshes": self.meshes,
@@ -427,7 +535,8 @@ impl Visitor for GltfExporter {
             }
         }
 
-        if let Some(&parent_idx) = self.node_stack.last() {
+        if let Some(parent_frame) = self.node_stack.last() {
+            let parent_idx = parent_frame.node_idx;
             if let Some(parent) = self.nodes.get_mut(parent_idx) {
                 if let Some(obj) = parent.as_object_mut() {
                     let entry = obj
@@ -438,10 +547,15 @@ impl Visitor for GltfExporter {
                     }
                 }
             }
+        } else {
+            self.root_nodes.push(node_idx);
         }
 
         self.nodes.push(gltf_node);
-        self.node_stack.push(node_idx);
+        self.node_stack.push(NodeFrame {
+            node_idx,
+            primitives: Vec::new(),
+        });
     }
 
     fn visit_geometry(
@@ -450,84 +564,30 @@ impl Visitor for GltfExporter {
         geometry: &Geometry,
         _store: &mut Store,
     ) {
-        // Extract scale from transform matrix
-        let scale = crate::export::tessellator::get_scale(&geometry.transform.matrix3.into());
-
-        let tri = match &geometry.kind {
-            GeometryKind::Cylinder(cyl) => cyl.tessellate(self.options.tolerance, scale),
-            GeometryKind::Sphere(sphere) => sphere.tessellate(self.options.tolerance, scale),
-            GeometryKind::Box(b) => b.tessellate(self.options.tolerance, scale),
-            GeometryKind::Pyramid(pyr) => pyr.tessellate(self.options.tolerance, scale),
-            GeometryKind::CircularTorus(torus) => torus.tessellate(self.options.tolerance, scale),
-            GeometryKind::RectangularTorus(torus) => {
-                torus.tessellate(self.options.tolerance, scale)
-            }
-            GeometryKind::EllipticalDish(dish) => dish.tessellate(self.options.tolerance, scale),
-            GeometryKind::SphericalDish(dish) => dish.tessellate(self.options.tolerance, scale),
-            GeometryKind::Snout(snout) => snout.tessellate(self.options.tolerance, scale),
-            GeometryKind::Line(line) => line.tessellate(self.options.tolerance, scale),
-            GeometryKind::FacetGroup(fg) => fg.tessellate(self.options.tolerance, scale),
-        };
-
-        let mut transform = geometry.transform;
-        if self.options.rotate_z_to_y {
-            let rotation = glam::Affine3A::from_mat3(glam::Mat3::from_rotation_x(
-                -std::f32::consts::FRAC_PI_2,
-            ));
-            transform = rotation * transform;
-        }
-
-        // Transform vertices
-        let mut transformed_vertices = Vec::new();
-        for i in (0..tri.vertices.len()).step_by(3) {
-            let v = glam::Vec3::new(tri.vertices[i], tri.vertices[i + 1], tri.vertices[i + 2]);
-            let transformed = transform.transform_point3(v);
-            transformed_vertices.push(transformed.x);
-            transformed_vertices.push(transformed.y);
-            transformed_vertices.push(transformed.z);
-        }
-
-        // Transform normals
-        let mut transformed_normals = Vec::new();
-        for i in (0..tri.normals.len()).step_by(3) {
-            let n = glam::Vec3::new(tri.normals[i], tri.normals[i + 1], tri.normals[i + 2]);
-            let transformed = transform.transform_vector3(n).normalize_or_zero();
-            transformed_normals.push(transformed.x);
-            transformed_normals.push(transformed.y);
-            transformed_normals.push(transformed.z);
-        }
-
-        // Create accessors
-        let position_accessor = self.create_accessor_vec3_with_options(&transformed_vertices, true);
-        let normal_accessor = self.create_accessor_vec3(&transformed_normals);
-        let indices_accessor = self.create_accessor_indices(&tri.indices);
-
-        // Create material
-        let material_idx = self.create_material(geometry.color, geometry.transparency);
-
-        // Create mesh
-        let mesh_idx = self.meshes.len();
-        self.meshes.push(json!({
-            "primitives": [{
-                "attributes": {
-                    "POSITION": position_accessor,
-                    "NORMAL": normal_accessor
-                },
-                "indices": indices_accessor,
-                "material": material_idx
-            }]
-        }));
-
-        // Add mesh to current node
-        if let Some(&node_idx) = self.node_stack.last() {
-            if let Some(node) = self.nodes.get_mut(node_idx) {
-                node["mesh"] = json!(mesh_idx);
-            }
-        }
+        let primitive = self.build_primitive(geometry);
+        self.push_primitive_to_current_node(primitive);
     }
 
     fn leave_node(&mut self, _node_id: NodeId, _node: &Node, _store: &mut Store) {
-        self.node_stack.pop();
+        let Some(frame) = self.node_stack.pop() else {
+            return;
+        };
+
+        if frame.primitives.is_empty() {
+            return;
+        }
+
+        let mesh_idx = self.meshes.len();
+        let primitives = frame
+            .primitives
+            .into_iter()
+            .map(|primitive| self.create_primitive_json(primitive))
+            .collect::<Vec<_>>();
+        self.meshes.push(json!({ "primitives": primitives }));
+
+        if let Some(node) = self.nodes.get_mut(frame.node_idx) {
+            node["mesh"] = json!(mesh_idx);
+        }
     }
 }
 
