@@ -58,18 +58,18 @@ fn test_snout_with_shear() {
     assert_eq!(tri.vertices.len(), tri.normals.len());
     assert!(tri.indices.len() > 0);
 
-    // Verify bottom and top are at different heights due to shear
-    let mut min_y = f32::MAX;
-    let mut max_y = f32::MIN;
+    // Verify bottom and top are at different heights due to shear (snouts run along Z)
+    let mut min_z = f32::MAX;
+    let mut max_z = f32::MIN;
 
     for i in 0..tri.vertices.len() / 3 {
-        let y = tri.vertices[3 * i + 1];
-        min_y = min_y.min(y);
-        max_y = max_y.max(y);
+        let z = tri.vertices[3 * i + 2];
+        min_z = min_z.min(z);
+        max_z = max_z.max(z);
     }
 
     // Height should be approximately 2.0, but shear will affect it
-    let height_range = max_y - min_y;
+    let height_range = max_z - min_z;
     assert!(
         height_range > 1.8 && height_range < 2.5,
         "Height range unexpected: {}",
