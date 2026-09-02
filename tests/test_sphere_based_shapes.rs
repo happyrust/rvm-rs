@@ -67,22 +67,23 @@ fn test_elliptical_dish_basic() {
         );
     }
 
-    // Check height range
-    let mut min_y = f32::MAX;
-    let mut max_y = f32::MIN;
+    // Check height range: RVM dishes rise from z = 0 along +Z.
+    let mut min_z = f32::MAX;
+    let mut max_z = f32::MIN;
 
     for i in 0..tri.vertices.len() / 3 {
-        let y = tri.vertices[3 * i + 1];
-        min_y = min_y.min(y);
-        max_y = max_y.max(y);
+        let z = tri.vertices[3 * i + 2];
+        min_z = min_z.min(z);
+        max_z = max_z.max(z);
     }
 
     // Height should be approximately 1.0
     assert!(
-        (max_y - min_y - 1.0).abs() < 0.2,
+        (max_z - min_z - 1.0).abs() < 0.2,
         "Height range unexpected: {}",
-        max_y - min_y
+        max_z - min_z
     );
+    assert!(min_z.abs() < 0.05, "Dish base should sit on z = 0, got {}", min_z);
 }
 
 #[test]
@@ -143,17 +144,17 @@ fn test_elliptical_dish_scaling() {
 
     let tri = dish.tessellate(0.01, 1.0);
 
-    // Find the range of Y coordinates
-    let mut min_y = f32::MAX;
-    let mut max_y = f32::MIN;
+    // Find the range of Z coordinates (the dish axis in the RVM frame)
+    let mut min_z = f32::MAX;
+    let mut max_z = f32::MIN;
 
     for i in 0..tri.vertices.len() / 3 {
-        let y = tri.vertices[3 * i + 1];
-        min_y = min_y.min(y);
-        max_y = max_y.max(y);
+        let z = tri.vertices[3 * i + 2];
+        min_z = min_z.min(z);
+        max_z = max_z.max(z);
     }
 
-    let height = max_y - min_y;
+    let height = max_z - min_z;
 
     // Height should be approximately 4.0
     assert!(
@@ -179,8 +180,9 @@ fn test_spherical_dish_geometry() {
     // Calculate expected sphere radius
     let r_sphere = (r_circ * r_circ + h * h) / (2.0 * h);
 
-    // Check that vertices are approximately on the sphere surface
-    let center_y = h - r_sphere;
+    // Check that vertices are approximately on the sphere surface; the sphere
+    // centre sits on the dish axis (Z in the RVM frame), below the base plane.
+    let center_z = h - r_sphere;
 
     let mut max_deviation: f32 = 0.0;
     for i in 0..tri.vertices.len() / 3 {
@@ -188,7 +190,7 @@ fn test_spherical_dish_geometry() {
         let y = tri.vertices[3 * i + 1];
         let z = tri.vertices[3 * i + 2];
 
-        let dist = ((x * x + (y - center_y) * (y - center_y) + z * z).sqrt() - r_sphere).abs();
+        let dist = ((x * x + y * y + (z - center_z) * (z - center_z)).sqrt() - r_sphere).abs();
         max_deviation = max_deviation.max(dist);
     }
 

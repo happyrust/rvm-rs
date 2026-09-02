@@ -268,6 +268,32 @@ fn sagitta_based_segment_count(
         .min(max_samples as f32) as usize
 }
 
+/// Bring a shape generated in the Y-up builder frame into the RVM record frame.
+///
+/// RVM primitives are described Z-up: cylinders, snouts and pyramids run along Z
+/// and are centred on the origin, tori sweep in the X–Y plane from +X towards +Y,
+/// dishes rise from z = 0 along +Z. The generators in this module build with the
+/// axis on Y and the sweep in X–Z (cylinders and pyramids from 0 to `height`).
+/// The PRIM record's own bbox and every exporter — which multiplies the record
+/// transform onto these vertices verbatim — expect the Z-up frame, so without this
+/// step cylinders and elbows land rotated 90° against the facet groups and boxes
+/// of the same model.
+///
+/// Swapping Y and Z is a reflection, so the winding is flipped to keep faces
+/// outward; `axis_shift` recentres shapes that were built from 0 to `height`.
+fn into_rvm_frame(tri: &mut Triangulation, axis_shift: f32) {
+    for position in tri.vertices.as_chunks_mut::<3>().0 {
+        position.swap(1, 2);
+        position[2] += axis_shift;
+    }
+    for normal in tri.normals.as_chunks_mut::<3>().0 {
+        normal.swap(1, 2);
+    }
+    for face in tri.indices.as_chunks_mut::<3>().0 {
+        face.swap(1, 2);
+    }
+}
+
 /// Unified sphere-based shape tessellation
 /// This function generates sphere, elliptical dish, and spherical dish geometries
 /// by parameterizing the sphere generation.
@@ -407,6 +433,8 @@ fn sphere_based_shape(
         vertex_offset = offset_next;
     }
 
+    // Dishes rise from z = 0; spheres are centred already — no axis shift either way.
+    into_rvm_frame(&mut tri, 0.0);
     tri.error = tolerance;
     tri
 }
@@ -476,6 +504,8 @@ impl TessellateWithCaps for Cylinder {
             }
         }
 
+        // RVM cylinders are centred on the origin along Z.
+        into_rvm_frame(&mut tri, -self.height / 2.0);
         tri.error = tolerance;
         tri
     }
@@ -632,6 +662,8 @@ impl Tessellate for Pyramid {
         tri.add_triangle(v20, v21, v22);
         tri.add_triangle(v20, v22, v23);
 
+        // RVM pyramids are centred on the origin along Z.
+        into_rvm_frame(&mut tri, -self.height / 2.0);
         tri.error = 0.0;
         tri
     }
@@ -747,10 +779,13 @@ impl TessellateWithCaps for CircularTorus {
             let cos_start = theta_start.cos();
             let sin_start = theta_start.sin();
 
+            // The start cap faces against the sweep direction, i.e. -tangent at theta = 0.
+            let start_normal = Vec3::new(sin_start, 0.0, -cos_start);
+
             // Add center vertex
             let start_center = tri.add_vertex(
                 Vec3::new(major_radius * cos_start, 0.0, major_radius * sin_start),
-                Vec3::new(0.0, -1.0, 0.0),
+                start_normal,
             );
 
             // Add ring vertices
@@ -763,7 +798,7 @@ impl TessellateWithCaps for CircularTorus {
                 let y = minor_radius * sin_phi;
                 let z = (major_radius + minor_radius * cos_phi) * sin_start;
 
-                tri.add_vertex(Vec3::new(x, y, z), Vec3::new(0.0, -1.0, 0.0));
+                tri.add_vertex(Vec3::new(x, y, z), start_normal);
             }
             tessellate_circle_cap(
                 &mut tri,
@@ -804,6 +839,8 @@ impl TessellateWithCaps for CircularTorus {
             tessellate_circle_cap(&mut tri, end_center, end_cap_base + 1, minor_samples, false);
         }
 
+        // RVM tori sweep in the X–Y plane with the tube section standing in Z.
+        into_rvm_frame(&mut tri, 0.0);
         tri.error = tolerance;
         tri
     }
@@ -857,12 +894,13 @@ impl TessellateWithCaps for RectangularTorus {
         for i in 0..samples {
             let (cos_t, sin_t) = angles[i];
 
-            // Normal directions for each face
+            // Normal directions for each face, in the same builder frame as the
+            // positions below (height on Y, sweep in X–Z).
             let normals = [
-                Vec3::new(0.0, 0.0, -1.0),      // Bottom face
-                Vec3::new(-cos_t, -sin_t, 0.0), // Inner face
-                Vec3::new(0.0, 0.0, 1.0),       // Top face
-                Vec3::new(cos_t, sin_t, 0.0),   // Outer face
+                Vec3::new(0.0, -1.0, 0.0),      // Bottom face
+                Vec3::new(-cos_t, 0.0, -sin_t), // Inner face
+                Vec3::new(0.0, 1.0, 0.0),       // Top face
+                Vec3::new(cos_t, 0.0, sin_t),   // Outer face
             ];
 
             // For each of the 4 faces, add 2 vertices (current corner and next corner)
@@ -899,7 +937,8 @@ impl TessellateWithCaps for RectangularTorus {
             for k in 0..4 {
                 let (cos_t, sin_t) = angles[0];
                 let pos = Vec3::new(square[k][0] * cos_t, square[k][1], square[k][0] * sin_t);
-                tri.add_vertex(pos, Vec3::new(0.0, -1.0, 0.0));
+                // Faces against the sweep direction, i.e. -tangent at angle = 0.
+                tri.add_vertex(pos, Vec3::new(sin_t, 0.0, -cos_t));
             }
             tri.add_triangle(start_base, start_base + 2, start_base + 1);
             tri.add_triangle(start_base + 2, start_base, start_base + 3);
@@ -923,6 +962,8 @@ impl TessellateWithCaps for RectangularTorus {
             tri.add_triangle(end_base + 2, end_base + 3, end_base);
         }
 
+        // RVM tori sweep in the X–Y plane with the section height standing in Z.
+        into_rvm_frame(&mut tri, 0.0);
         tri.error = tolerance;
         tri
     }
@@ -1031,7 +1072,8 @@ impl TessellateWithCaps for Snout {
             let nx = cos_a;
             let ny = sin_a;
             let nz = -(r_top - r_bottom + s) / height;
-            let normal = Vec3::new(nx, ny, nz).normalize_or_zero();
+            // Same builder frame as the positions: axis on Y.
+            let normal = Vec3::new(nx, nz, ny).normalize_or_zero();
 
             tri.add_vertex(Vec3::new(bx, bz, by), normal);
             tri.add_vertex(Vec3::new(tx, tz, ty), normal);
@@ -1113,6 +1155,8 @@ impl TessellateWithCaps for Snout {
             }
         }
 
+        // RVM snouts run along Z, centred on the origin (already built from -h/2 to h/2).
+        into_rvm_frame(&mut tri, 0.0);
         tri.error = tolerance;
         tri
     }
